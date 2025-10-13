@@ -1,0 +1,218 @@
+## 交叉编译
+树莓派内核为交叉编译生成，编译模块所需的模块头文件都在笔记本电脑上，所以使用交叉编译生成模块。内核源码路径为`/media/zs/ubuntu_disk/rt_linux/rpi-5.8/linux`。编译脚本如下：
+首先，进入内核源码目录，准备编译环境：
+```bash
+cd /media/zs/ubuntu_disk/rt_linux/rpi-5.8/linux
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+```
+这条命令不会编译整个内核，只会：
+
+- 生成 include/generated/utsrelease.h
+
+- 生成 Module.symvers
+
+- 准备模块构建环境
+
+执行完成后，确认：
+```bash
+ls include/generated/utsrelease.h
+```
+
+```bash
+#!/bin/bash
+set -e
+
+# ====== 请按实际情况修改这两项 ======
+CROSS_COMPILE=aarch64-linux-gnu-   # 交叉前缀（替换为你的）
+ARCH=arm64                         # 目标架构（arm/arm64/x86 等）
+KDIR=/media/zs/ubuntu_disk/rt_linux/rpi-5.8/linux   # 指向你的内核源码（或 /lib/modules/$(uname -r)/build）
+# ====================================
+
+PWD=$(pwd)
+export ARCH CROSS_COMPILE
+
+echo "[*] Using KDIR=${KDIR}"
+echo "[*] Building module for ARCH=${ARCH} with CROSS_COMPILE=${CROSS_COMPILE}"
+
+make -C "${KDIR}" M=${PWD} ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
+echo "[*] Build done: $(pwd)/hello.ko"
+modinfo hello.ko | grep vermagic || true
+```
+
+保存为`build_cross.sh`，赋予可执行权限：
+```bash
+chmod +x build_cross.sh
+```
+
+然后运行脚本：
+```bash
+./build_cross.sh
+```
+
+编译成功后会在当前目录生成`hello.ko`模块文件，日志会输出在`build_cross.log`中：
+```bash
+make: 进入目录“/media/zs/ubuntu_disk/rt_linux/rpi-5.8/linux”
+  CC [M]  /media/zs/ubuntu_disk/linux-try/kernel_module_hello/hello.o
+  MODPOST /media/zs/ubuntu_disk/linux-try/kernel_module_hello/Module.symvers
+  CC [M]  /media/zs/ubuntu_disk/linux-try/kernel_module_hello/hello.mod.o
+  LD [M]  /media/zs/ubuntu_disk/linux-try/kernel_module_hello/hello.ko
+make: 离开目录“/media/zs/ubuntu_disk/rt_linux/rpi-5.8/linux”
+```
+
+确认模块信息：
+```bash
+modinfo hello.ko
+```
+输出类似：
+```bash
+filename:       /media/zs/ubuntu_disk/linux-try/kernel_module_hello/hello.ko
+version:        1.0
+description:    Simple Hello World kernel module
+author:         zs
+license:        GPL
+srcversion:     FABD619D652F84EC38A6C40
+depends:        
+name:           hello
+vermagic:       5.8.18-v8+ SMP preempt mod_unload modversions aarch64
+```
+
+将模块复制到目标树莓派上，：
+```bash
+scp hello.ko rpi4-1@192.168.1.105:/tmp/
+```
+
+使用`insmod`命令加载模块:
+```bash
+sudo insmod /tmp/hello.ko
+```
+
+查看内核日志输出:
+```bash
+dmesg | tail -n 10
+```
+
+输出类似：
+```bash
+[ 3700.463603] HelloModule: Hello, kernel world! (ver=5.8.18-v8+)
+```
+
+查看模块是否加载成功
+```bash
+lsmod | grep hello
+```
+
+输出类似：
+```bash
+hello                  16384  0
+```
+
+卸载模块:
+```bash
+sudo rmmod hello
+dmesg | tail -n 10
+lsmod | grep hello  # 没有输出
+```
+
+输出类似：
+```bash
+[ 3751.164989] HelloModule: Goodbye, kernel world!
+```
+
+## 在目标机上本地编译模块
+
+### 在主机上准备需要的内核头/源码并打包
+在主机（即保存了完整内核源码的地方）执行：
+```bash
+cd /media/zs/ubuntu_disk/rt_linux/rpi-5.8/linux
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+# 打包必要文件（可以打包整个源码树）
+tar czf /tmp/linux-headers-5.8.18-HCBS-v8+.tar.gz *
+```
+
+### 拷贝并在目标机解包、建立 build 软链
+
+在主机执行：
+```bash
+scp /tmp/linux-headers-5.8.18-HCBS-v8+.tar.gz ${TARGET_USER}@${TARGET_HOST}:/tmp/
+```
+
+在目标机上:
+```bash
+cd /usr/src
+sudo tar xzf /tmp/linux-headers-5.8.18-HCBS-v8+.tar.gz
+
+# 假设解压后目录名为 /usr/src/linux-headers-5.8.18-HCBS-v8+
+# 建立软链接指向 /lib/modules/$(uname -r)/build
+sudo rm -f /lib/modules/$(uname -r)/build
+sudo ln -s /usr/src/linux-headers-5.8.18-HCBS-v8+ /lib/modules/$(uname -r)/build
+
+# 验证
+ls -l /lib/modules/$(uname -r)/build
+```
+
+### 在目标机上编译模块
+
+安装必要的编译工具：
+```bash
+sudo apt update
+sudo apt install -y make gcc build-essential
+sudo apt install -y flex bison libncurses5-dev libssl-dev bc
+```
+
+进入模块源码目录，准备编译环境：
+
+```bash
+cd /usr/src/linux-headers-5.8.18-HCBS-v8+
+sudo make clean
+sudo make modules_prepare
+```
+然后运行编译脚本：
+```bash
+cd ~/hello_module
+./build.sh
+```
+
+日志输出如下：
+```bash
+[*] Using KDIR=/lib/modules/5.8.18-HCBS-v8+/build
+make: Entering directory '/usr/src/linux-headers-5.8.18-HCBS-v8+'
+  CC [M]  /home/rpi4-1/hello_module/hello.o
+  MODPOST /home/rpi4-1/hello_module/Module.symvers
+  CC [M]  /home/rpi4-1/hello_module/hello.mod.o
+  LD [M]  /home/rpi4-1/hello_module/hello.ko
+make: Leaving directory '/usr/src/linux-headers-5.8.18-HCBS-v8+'
+[*] Build done: /home/rpi4-1/hello_module/hello.ko
+vermagic:       5.8.18-v8 SMP preempt mod_unload modversions aarch64
+```
+
+确认模块信息：
+```bash
+modinfo hello.ko
+```
+输出类似：
+```bash
+filename:       /home/rpi4-1/hello_module/hello.ko
+version:        1.0
+description:    Simple Hello World kernel module
+author:         zs
+license:        GPL
+srcversion:     FABD619D652F84EC38A6C40
+depends:        
+name:           hello
+vermagic:       5.8.18-v8 SMP preempt mod_unload modversions aarch64
+```
+
+使用`insmod`命令加载模块:
+```bash
+sudo insmod ./hello.ko
+```
+
+查看内核日志输出:
+```bash
+dmesg | tail -n 10
+```
+
+输出类似：
+```bash
+[47078.626643] HelloModule: Hello, kernel world! (ver=5.8.18-v8)
+```
