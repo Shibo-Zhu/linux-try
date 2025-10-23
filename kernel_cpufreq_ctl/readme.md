@@ -8,7 +8,7 @@ This is a simple linux module to control the CPU frequency scaling driver on Lin
 
 2. Load the module
     ```bash
-    sudo insmod kernel_cpufreq_ctl.ko
+    sudo insmod cpufreq_ctl.ko
     ```
 
 3. Build the user-space application
